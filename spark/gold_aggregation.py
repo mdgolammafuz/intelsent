@@ -3,6 +3,7 @@ Gold Aggregation: Silver → Gold (Batch)
 Creates aggregated tables for analytics and Feature Store (Postgres).
 Methodical: Fails fast if source data or metadata is missing.
 Aligned: Forces UTC-to-Helsinki conversion for deterministic contextual features.
+Robust: Gracefully handles empty partitions to prevent DB corruption.
 """
 
 import argparse
@@ -41,12 +42,18 @@ def write_to_postgres(df: DataFrame, table_name: str, config):
     Methodical: Uses truncate=true to empty the table without dropping it,
     preserving downstream dbt view dependencies.
     """
+    # Never truncate and write an empty dataset to Postgres
+    if df.count() == 0:
+         logger.warning(f"Skipping Postgres sync for {table_name}: Source DataFrame is empty.")
+         return
+
     h_conf = df.sparkSession.sparkContext._jsc.hadoopConfiguration()
     h_conf.set("fs.s3a.access.key", config.minio_access_key)
     h_conf.set("fs.s3a.secret.key", config.minio_secret_key)
     h_conf.set("fs.s3a.endpoint", config.minio_endpoint)
     h_conf.set("fs.s3a.path.style.access", "true")
     h_conf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+    
     logger.info(f"Syncing {table_name} to Postgres Marts (Truncate Mode)...")
     try:
         df.write \
@@ -75,6 +82,10 @@ def aggregate_daily_metrics(spark: SparkSession, config, target_date: str):
     try:
         # Filter source by the mandatory target date
         silver_df = spark.read.format("delta").load(silver_path).filter(col("date") == target_date)
+
+        # [FIXED] Warn if empty, but proceed to let Spark handle schema consistency
+        if silver_df.count() == 0:
+            logger.warning(f"No Silver data found for {target_date} in daily_metrics. Propagating schema.")
 
         # Create delay_category on the fly before aggregation
         processed_df = silver_df.withColumn(
@@ -125,6 +136,10 @@ def aggregate_hourly_metrics(spark: SparkSession, config, target_date: str):
     try:
         silver_df = spark.read.format("delta").load(silver_path).filter(col("date") == target_date)
 
+        # [FIXED] Propagate empty schema
+        if silver_df.count() == 0:
+            logger.warning(f"No Silver data found for {target_date} in hourly_metrics. Propagating schema.")
+
         hourly_df = (
             silver_df.withColumn("local_time", from_utc_timestamp(col("timestamp"), "Europe/Helsinki"))
             .withColumn("hour_val", hour("local_time"))
@@ -160,6 +175,10 @@ def aggregate_stop_performance(spark: SparkSession, config, target_date: str):
             .filter(col("date") == target_date) \
             .withColumn("stop_id", trim(col("stop_id").cast("string"))) 
             
+        # Warn and propagate
+        if silver_df.count() == 0:
+            logger.warning(f"No Silver data found for {target_date} in stop_performance. Propagating schema.")
+            
         stops_metadata = spark.read.format("delta").load(metadata_path) \
             .select(
                 trim(col("stop_id").cast("string")).alias("stop_id"),
@@ -169,7 +188,7 @@ def aggregate_stop_performance(spark: SparkSession, config, target_date: str):
             )
 
         # 2. Process Metrics (UTC to Helsinki Shift)
-        # FIX: Using 'delay_at_arrival' as confirmed by your error log
+        
         stop_metrics = (
             silver_df.withColumn("local_time", from_utc_timestamp(col("arrival_timestamp"), "Europe/Helsinki"))
             .withColumn("hour_of_day", hour("local_time"))
