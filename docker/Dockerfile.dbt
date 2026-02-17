@@ -1,0 +1,18 @@
+# docker/Dockerfile.dbt
+FROM python:3.10-slim
+
+# Set working directory
+WORKDIR /usr/app
+
+# Install system dependencies (git is often needed for dbt deps)
+RUN apt-get update && apt-get install -y \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dbt and the postgres adapter
+RUN pip install --no-cache-dir \
+    dbt-core \
+    dbt-postgres
+
+# Keep the container alive so we can exec commands into it
+CMD ["tail", "-f", "/dev/null"]
