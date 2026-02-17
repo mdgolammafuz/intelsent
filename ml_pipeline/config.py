@@ -1,6 +1,6 @@
 """
 ML Pipeline configuration.
-Hardened: strictly aligned with Phase 5 verified dbt schemas.
+Aligned with verified dbt schemas.
 """
 
 import os
