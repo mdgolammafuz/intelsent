@@ -8,7 +8,7 @@ import logging
 import sys
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, current_timestamp, from_json, to_date
+from pyspark.sql.functions import col, current_timestamp, from_json, to_date, lit
 from pyspark.sql.types import (
     BooleanType,
     DoubleType,
@@ -17,8 +17,11 @@ from pyspark.sql.types import (
     StringType,
     StructField,
     StructType,
+    TimestampType,
+    DateType
 )
 
+from delta.tables import DeltaTable
 from spark.config import create_spark_session, load_config
 
 # Setup Logging
@@ -68,18 +71,21 @@ STOP_EVENTS_SCHEMA = StructType(
 
 
 def upsert_to_delta(micro_batch_df, batch_id, output_path):
-    from delta.tables import DeltaTable
-    
-    # If the dataframe is empty, skip to save time
-    if micro_batch_df.rdd.isEmpty():
-        return
-
+    """
+    Writes the micro-batch to Delta Lake.
+    Handles 'Cold Start' by creating the table if it doesn't exist.
+    """
+    # Check if the Delta Table already exists
     if not DeltaTable.isDeltaTable(micro_batch_df.sparkSession, output_path):
+        # If not, create it (even if df is empty, this creates the schema/folder)
         micro_batch_df.write.format("delta").mode("append").partitionBy("date").save(output_path)
     else:
+        # If it exists, merge the new data
         dt = DeltaTable.forPath(micro_batch_df.sparkSession, output_path)
         
         cols = micro_batch_df.columns
+        
+        # Dynamic merge condition based on available columns
         if "event_time_ms" in cols:
             condition = "t.vehicle_id = s.vehicle_id AND t.date = s.date AND t.event_time_ms = s.event_time_ms"
         elif "arrival_time" in cols:
@@ -91,6 +97,7 @@ def upsert_to_delta(micro_batch_df, batch_id, output_path):
             micro_batch_df.alias("s"),
             condition
         ).whenNotMatchedInsertAll().execute()
+
 
 def write_bronze_stream(
     spark: SparkSession,
@@ -113,6 +120,7 @@ def write_bronze_stream(
         .load()
     )
 
+    # Transform: Parse JSON and add Technical Columns
     parsed_df = (
         kafka_df.select(
             from_json(col("value").cast("string"), schema).alias("data"),
@@ -136,7 +144,6 @@ def write_bronze_stream(
 
     if run_once:
         # Trigger AvailableNow consumes all data available in Kafka then stops.
-        # This is CRITICAL for the batch pipeline to proceed.
         return writer.trigger(availableNow=True).start()
     else:
         return writer.trigger(processingTime="10 seconds").start()
@@ -145,12 +152,46 @@ def write_bronze_stream(
 def main():
     parser = argparse.ArgumentParser(description="TransitFlow Bronze Writer")
     parser.add_argument("--table", choices=["enriched", "stop_events", "all"], default="all")
-    # Essential for run_batch_pipeline
     parser.add_argument("--once", action="store_true", help="Process all available data and exit (Batch Mode)")
     args = parser.parse_args()
 
     config = load_config()
     spark = create_spark_session("TransitFlow-BronzeWriter")
+
+    # --- INITIALIZATION BLOCK ---
+    # We initialize the tables with the COMPLETE schema (Raw + Technical Columns).
+    # This prevents downstream (Silver) jobs from crashing if they read an empty table.
+    
+    logger.info("Ensuring Delta Tables exist with correct schema...")
+
+    # 1. Initialize Enriched Table
+    if args.table in ["enriched", "all"]:
+        spark.createDataFrame([], ENRICHED_SCHEMA) \
+            .withColumn("kafka_partition", lit(None).cast(IntegerType())) \
+            .withColumn("kafka_offset", lit(None).cast(LongType())) \
+            .withColumn("kafka_timestamp", lit(None).cast(TimestampType())) \
+            .withColumn("ingestion_time", lit(None).cast(TimestampType())) \
+            .withColumn("date", lit(None).cast(DateType())) \
+            .write \
+            .format("delta") \
+            .mode("ignore") \
+            .partitionBy("date") \
+            .save(f"{config.bronze_path}/enriched")
+
+    # 2. Initialize Stop Events Table
+    if args.table in ["stop_events", "all"]:
+        spark.createDataFrame([], STOP_EVENTS_SCHEMA) \
+            .withColumn("kafka_partition", lit(None).cast(IntegerType())) \
+            .withColumn("kafka_offset", lit(None).cast(LongType())) \
+            .withColumn("kafka_timestamp", lit(None).cast(TimestampType())) \
+            .withColumn("ingestion_time", lit(None).cast(TimestampType())) \
+            .withColumn("date", lit(None).cast(DateType())) \
+            .write \
+            .format("delta") \
+            .mode("ignore") \
+            .partitionBy("date") \
+            .save(f"{config.bronze_path}/stop_events")
+    # ---------------------------
 
     queries = []
 
