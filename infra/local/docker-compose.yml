@@ -1,3 +1,5 @@
+version: "3.8"
+
 # --- Shared Environment Variables ---
 x-app-env: &app-env
   KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
@@ -22,20 +24,20 @@ x-logging: &default-logging
 
 services:
   
-  # --- Presentation Layer ---
-  nginx:
-    image: nginx:alpine
-    container_name: nginx
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../../ui:/usr/share/nginx/html:ro
-    depends_on:
-      - serving-api
-      - grafana
-    logging: *default-logging
-    restart: always
+  # --- Presentation Layer (DISABLED TO SAVE RESOURCES) ---
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: nginx
+  #   ports:
+  #     - "80:80"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  #     - ../../ui:/usr/share/nginx/html:ro
+  #   depends_on:
+  #     - serving-api
+  #     # - grafana
+  #   logging: *default-logging
+  #   restart: always
 
   # --- Ingestion Service ---
   producer:
@@ -83,13 +85,12 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    # FIX: Relaxed healthcheck to allow slow startup on CI/Cloud VMs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/"]
-      interval: 15s       # Check less frequently
+      interval: 15s       
       timeout: 10s
-      retries: 10         # Allow 10 failures before restarting
-      start_period: 60s   # Give it 1 minute to boot
+      retries: 10         
+      start_period: 60s   
     restart: always
     logging: *default-logging
 
@@ -102,9 +103,14 @@ services:
     restart: always
     working_dir: /app
     ports:
+      # Map host port 80 to container port 8001
+      # This allows users to type our IP without a port
+      - "80:8001" 
+      # Keep 8001 open for direct API access if needed
       - "8001:8001"
     environment:
       <<: *app-env
+      GIT_PYTHON_REFRESH: "quiet"
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
@@ -112,7 +118,7 @@ services:
       AWS_DEFAULT_REGION: us-east-1
       ENABLE_SHADOW: "true"
       FEATURE_API_URL: http://feature-api:8000
-      OTLP_ENDPOINT: http://jaeger:4317
+      # OTLP_ENDPOINT: http://jaeger:4317 # Disabled for space
       MLFLOW_HTTP_REQUEST_MAX_RETRIES: "1"
       MLFLOW_HTTP_REQUEST_TIMEOUT: "5"
     volumes:
@@ -167,13 +173,13 @@ services:
           )
           cur = conn.cursor()
           
-          # CHECK THE REAL TABLE defined in init.sql
-          cur.execute('SELECT COUNT(*) FROM bronze.stop_events') 
+          # Check the permanent Gold table, not the ephemeral Bronze table
+          cur.execute('SELECT COUNT(*) FROM gold.stop_performance') 
           count = cur.fetchone()[0]
           cur.close()
           conn.close()
           
-          logger.info(f'Found {count} records in bronze.stop_events')
+          logger.info(f'Found {count} records in gold.stop_performance')
 
           if count < 50:
               logger.warning('Insufficient history (<50 events). Skipping Training.')
@@ -194,14 +200,14 @@ services:
   feature-api:
     build:
       context: ../..
-      dockerfile: docker/Dockerfile.serving  # Reuses existing Python image
+      dockerfile: docker/Dockerfile.serving
     container_name: feature-api
     command: uvicorn feature_store.api:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     environment:
-      <<: *app-env  # Inherits Redis/Postgres/MinIO credentials
-      OTLP_ENDPOINT: "http://jaeger:4317"
+      <<: *app-env
+      # OTLP_ENDPOINT: "http://jaeger:4317" # Disabled
       PYTHONPATH: "/app"
     depends_on:
       - redis
@@ -224,6 +230,9 @@ services:
       - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
       - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://127.0.0.1:9092
       - --schema-registry-addr 0.0.0.0:8081
+      # --- Aggressive Retention ---
+      - --set redpanda.log_retention_ms=3600000  # Delete messages older than 1 hour
+      - --set redpanda.log_segment_size=10485760 # create small 10MB files so they can be deleted faster
     ports:
       - "9092:9092"
       - "9644:9644"
@@ -231,7 +240,6 @@ services:
     logging: *default-logging
     volumes:
       - redpanda_data:/var/lib/redpanda/data
-    # FIX: Redpanda is heavy. Give it 90s to elect a leader.
     healthcheck:
       test: ["CMD", "rpk", "cluster", "health"]
       interval: 30s
@@ -240,20 +248,21 @@ services:
       start_period: 90s
     restart: always
 
-  redpanda-console:
-    image: redpandadata/console:v2.4.3
-    container_name: redpanda-console
-    environment:
-      KAFKA_BROKERS: redpanda:29092
-      SCHEMA_REGISTRY_ENABLED: "true"
-      SCHEMA_REGISTRY_URLS: http://redpanda:8081
-    ports:
-      - "8080:8080"
-    logging: *default-logging
-    depends_on:
-      redpanda:
-        condition: service_healthy
-    restart: always
+  # --- UI Console (DISABLED) ---
+  # redpanda-console:
+  #   image: redpandadata/console:v2.4.3
+  #   container_name: redpanda-console
+  #   environment:
+  #     KAFKA_BROKERS: redpanda:29092
+  #     SCHEMA_REGISTRY_ENABLED: "true"
+  #     SCHEMA_REGISTRY_URLS: http://redpanda:8081
+  #   ports:
+  #     - "8080:8080"
+  #   logging: *default-logging
+  #   depends_on:
+  #     redpanda:
+  #       condition: service_healthy
+  #   restart: always
 
   # --- Stream Processing (Flink) ---
   flink-jobmanager:
@@ -413,7 +422,6 @@ services:
     logging: *default-logging
     volumes:
       - minio_data:/data
-    # MinIO is disk-heavy. Give it time to initialize storage.
     healthcheck:
       test: ["CMD", "/usr/bin/mc", "ready", "local"]
       interval: 10s
@@ -422,7 +430,6 @@ services:
       start_period: 30s
     restart: always
 
-  # --- Storage Initialization (Worker) ---
   minio-init:
     image: minio/mc:RELEASE.2024-01-13T08-44-48Z
     container_name: minio-init
@@ -434,18 +441,13 @@ services:
     logging: *default-logging
     entrypoint: >
       /bin/sh -c "
-      # Create primary bucket for Data Lakehouse & MLflow artifacts
       mc mb myminio/transitflow-lakehouse --ignore-existing;
       mc mb myminio/flink-checkpoints --ignore-existing;
-      
-      # Set policies to allow MLflow client and Spark jobs to access buckets
       mc policy set public myminio/transitflow-lakehouse;
       mc policy set public myminio/flink-checkpoints;
-      
       exit 0;
       "
 
-  # --- Database (ROBUSTNESS FIX APPLIED) ---
   postgres:
     image: postgres:15-alpine
     container_name: postgres
@@ -459,7 +461,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ${PWD}/init/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    # FIX: DB initialization can take time (creating tables/indexes).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -485,7 +486,9 @@ services:
     restart: always
 
   dbt:
-    image: python:3.10-slim
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile.dbt
     container_name: dbt
     working_dir: /usr/app
     dns:
@@ -501,47 +504,43 @@ services:
       postgres:
         condition: service_healthy
 
-  prometheus:
-    image: prom/prometheus:v2.49.1
-    container_name: prometheus
-    ports:
-      - "9090:9090"
-    logging: *default-logging
-    volumes:
-      - ./init/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --web.enable-lifecycle
-    extra_hosts:
-      - "host.docker.internal:host-gateway" 
-    restart: always
+  # --- Observability Stack (DISABLED TO SAVE RESOURCES) ---
+  # prometheus:
+  #   image: prom/prometheus:v2.49.1
+  #   container_name: prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   logging: *default-logging
+  #   volumes:
+  #     - ./init/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+  #   command:
+  #     - --config.file=/etc/prometheus/prometheus.yml
+  #     - --web.enable-lifecycle
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway" 
+  #   restart: always
 
-  grafana:
-    image: grafana/grafana:10.2.3
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    logging: *default-logging
-    environment:
-      # 1. Admin Security
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      
-      # 2. Public Access ("No Password")
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
-      # Hide the "Sign In" button (Admins can still go to /login)
-      - GF_AUTH_DISABLE_LOGIN_FORM=true
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ../../grafana/provisioning:/etc/grafana/provisioning:ro
-      - ../../grafana/dashboards:/var/lib/grafana/dashboards/transitflow:ro
-    restart: always
-
+  # grafana:
+  #   image: grafana/grafana:10.2.3
+  #   container_name: grafana
+  #   ports:
+  #     - "3000:3000"
+  #   logging: *default-logging
+  #   environment:
+  #     - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+  #     - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+  #     - GF_AUTH_ANONYMOUS_ENABLED=true
+  #     - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+  #     - GF_AUTH_DISABLE_LOGIN_FORM=true
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #     - ../../grafana/provisioning:/etc/grafana/provisioning:ro
+  #     - ../../grafana/dashboards:/var/lib/grafana/dashboards/transitflow:ro
+  #   restart: always
 
 volumes:
   redpanda_data:
   postgres_data:
   redis_data:
   minio_data:
-  grafana_data:
+  # grafana_data: # Disabled
