@@ -88,4 +88,4 @@ dbt/.user.yml
 mlruns/
 outputs/
 *.pkl
-*.joblib
+*.joblibdrift.json
