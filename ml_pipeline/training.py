@@ -1,7 +1,7 @@
 """
 ML Training Pipeline.
 
-Pattern: DE#8 - ML Reproducibility
+Pattern: ML Reproducibility
 """
 
 import time
