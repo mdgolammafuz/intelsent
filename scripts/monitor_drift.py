@@ -25,17 +25,14 @@ logger = structlog.get_logger()
 def get_postgres_engine(config):
     """
     Create database engine.
-    STRICT SECURITY: No hardcoded defaults allowed. 
-    Refers to the environment variables injected by docker-compose from the .env file.
     """
     try:
         user = os.environ['POSTGRES_USER']
         password = os.environ['POSTGRES_PASSWORD']
-        port = os.environ.get('POSTGRES_PORT', '5432') # Port is standard, default is acceptable
+        port = os.environ.get('POSTGRES_PORT', '5432') 
         db_name = os.environ['POSTGRES_DB'] 
         
-        # 'config.postgres_host' comes from MLConfig which reads 'POSTGRES_HOST' env var
-        # or defaults to 'postgres' (container name)
+        # MLConfig reads 'POSTGRES_HOST' from env (which is 'postgres' in docker-compose)
         host = config.postgres_host 
 
         db_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
@@ -51,7 +48,6 @@ def fetch_data(engine, days_back=1, days_window=1):
     end_date = datetime.now() - timedelta(days=days_back)
     start_date = end_date - timedelta(days=days_window)
     
-    # We use raw metrics available in bronze.enriched as confirmed via CLI
     query = f"""
     SELECT 
         delay_seconds,
@@ -74,39 +70,36 @@ def main():
         engine = get_postgres_engine(config)
         logger.info("drift_check_started", table="bronze.enriched")
 
-        # 1. Fetch Production Data (Yesterday)
+        # 1. Fetch Production Data (Yesterday / Last 24h)
         df_current = fetch_data(engine, days_back=0, days_window=1)
         
         if df_current.empty:
             logger.warning("no_data_found", context="current_window_yesterday")
-            # Exit gracefully without error so pipeline doesn't crash on Day 1
+            # Exit gracefully so pipeline continues
             sys.exit(0)
 
-        # 2. Fetch Baseline (Last Month)
-        # Attempt to fetch real history first (True Baseline)
+        # 2. Fetch Baseline (Attempt Last Month)
+        # In Survival Mode (3-day retention), this will likely return Empty.
         df_baseline = fetch_data(engine, days_back=30, days_window=5)
 
-        # Fallback: If DB is new and has no history, split current data to test pipeline connectivity
+        # 3. Fallback Logic (Crucial for Survival Mode)
+        # If history is deleted, we split current data 50/50 to simulate a check
         if df_baseline.empty or len(df_baseline) < 100:
-            logger.warning("baseline_data_missing", msg="Using split of current data as fallback")
+            logger.warning("baseline_data_missing", msg="Survival Mode detected: Using split of current data as fallback")
             df_baseline = df_current.sample(frac=0.5, random_state=42)
 
-        # 3. Detect Drift
+        # 4. Detect Drift
         detector = DriftDetector()
         drift_results = {}
-        
-        # Columns confirmed via CLI to exist in bronze.enriched
         features_to_check = ["delay_seconds", "speed_ms", "distance_since_last_m"]
         
         for feature in features_to_check:
-            # Drop Nulls for calculation
             curr_values = df_current[feature].dropna().values
             base_values = df_baseline[feature].dropna().values
 
             if len(curr_values) == 0 or len(base_values) == 0:
                 continue
 
-            # Fit on baseline, detect on current
             detector.fit(feature, base_values)
             result = detector.detect(feature, curr_values)
             
@@ -119,7 +112,7 @@ def main():
                         psi=f"{result.psi:.4f}", 
                         severity=result.severity.value)
 
-        # 4. Save Report
+        # 5. Save Report
         output_file = "drift.json"
         with open(output_file, "w") as f:
             json.dump(drift_results, f, indent=2)
