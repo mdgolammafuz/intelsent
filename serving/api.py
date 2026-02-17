@@ -23,9 +23,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, FileResponse
 from pydantic import BaseModel, Field
 from prometheus_client import generate_latest
+from fastapi.staticfiles import StaticFiles
 
 # --- Project Imports ---
 from feature_store.config import FeatureStoreConfig
@@ -446,6 +447,24 @@ async def get_circuits():
             "last_failure": str(breaker.last_failure_time) if breaker.last_failure_time else None
         }
     return stats
+
+# Check if the UI directory exists
+ui_path = os.path.join(os.getcwd(), "ui")
+if os.path.exists(ui_path):
+    # Mount the 'ui' directory at the root '/' path
+    # We mount the directory itself, but handle the root index.html manually
+    # to avoid conflicts with other API routes.
+    app.mount("/static", StaticFiles(directory=ui_path), name="ui-static")
+
+    @app.get("/")
+    async def serve_ui():
+        """Serve the main UI page."""
+        index_file = os.path.join(ui_path, "index.html")
+        if os.path.exists(index_file):
+            return FileResponse(index_file)
+        return {"error": "index.html not found"}
+else:
+    logger.warning(f"UI directory not found at {ui_path}. UI will not be served.")
 
 if __name__ == "__main__":
     import uvicorn
