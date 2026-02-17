@@ -13,24 +13,19 @@ echo "[$(date)] === Starting TransitFlow Daily Pipeline ==="
 
 # --- Phase 1: Ingestion & Storage ---
 echo "[$(date)] 1. Running Bronze Ingestion (Batch Mode)..."
-# We use the --once flag (added to Makefile spark-bronze) to process backlog and exit.
 make spark-bronze
 
 echo "[$(date)] 2. Syncing to Postgres..."
-# Required for Drift Monitor (Postgres Bronze table)
 make spark-sync
 
 echo "[$(date)] 3. Running Silver Transformation..."
-# Cleans and deduplicates data
 make spark-silver
 
 echo "[$(date)] 4. Verifying Data Integrity (Reconciliation)..."
-# Checks count(Bronze) vs count(Silver). Logs results to Postgres.
 make spark-reconcile
 
 # --- Phase 2: Analytics & Metadata ---
 echo "[$(date)] 5. Initializing Gold Metadata..."
-# Ensures Gold/Stops tables exist before we try to join them
 make metadata-init
 
 echo "[$(date)] 6. Running Gold Aggregation..."
@@ -38,16 +33,27 @@ make spark-gold
 
 # --- Phase 3: Maintenance ---
 echo "[$(date)] 7. Running Lakehouse Maintenance..."
-# Vacuums Delta files and Cleans Postgres history (>35 days)
+# Vacuums Delta files and Cleans Postgres history (>3 days)
 make spark-maintenance
 
+echo "[$(date)] 8. Pruning Dangling Docker Images (Health Check)..."
+# Cleans up 1-2GB of orphaned images/networks safely
+docker system prune -f
+
 # --- Phase 4: MLOps ---
-echo "[$(date)] 8. Checking for Data Drift..."
-# Calculates PSI. Uses fallback if <30 days history.
+echo "[$(date)] 9. Checking for Data Drift..."
 docker exec $INTERACTIVE serving-api python scripts/monitor_drift.py
 
-echo "[$(date)] 9. Evaluating Retraining Rules..."
-# Checks drift.json. Triggers model-trainer if drift detected + sufficient data exists.
+echo "[$(date)] 10. Evaluating Retraining Rules..."
 docker exec $INTERACTIVE serving-api python mlops/retraining.py --drift-file drift.json
+
+# --- Phase 5: CLEANUP (Survival Mode) ---
+echo "[$(date)] 11. CLEANUP: Removing processed raw data..."
+# Authenticate securely inside the container
+docker exec $INTERACTIVE minio sh -c 'mc alias set myminio http://localhost:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD > /dev/null'
+
+# Aggressively delete Bronze and Silver data older than 1 day to save disk space.
+docker exec $INTERACTIVE minio mc rm -r --force --older-than 1d myminio/transitflow-lakehouse/bronze/ || true
+docker exec $INTERACTIVE minio mc rm -r --force --older-than 1d myminio/transitflow-lakehouse/silver/ || true
 
 echo "[$(date)] === Pipeline Complete ==="
