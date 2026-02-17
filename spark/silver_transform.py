@@ -5,7 +5,7 @@ Transforms raw Bronze data into cleaned, deduplicated Silver layer.
 - Resilient: Uses recursiveFileLookup to handle nested Parquet-as-folder structures.
 - Deduplicated: Employs Window functions to keep only the latest offset per event.
 - Aligned: Maintains 'timestamp' naming for Gold joins and 'arrival_timestamp' for events.
-- Fail-Fast: Explicit sys.exit(1) if source data is missing to prevent ghost writes.
+- Robust: Gracefully handles empty partitions to maintain schema without crashing pipelines.
 """
 
 import argparse
@@ -38,9 +38,10 @@ def transform_enriched(spark: SparkSession, config, process_date: str):
             .load(bronze_path) \
             .filter(col("date") == process_date)
         
+        # Do not exit on 0 rows. Let Spark process the empty DataFrame 
+        # to initialize/update the Silver Delta table schema for downstream dependencies.
         if bronze_df.count() == 0:
-            logger.error(f"FATAL: No enriched data found for {process_date} at {bronze_path}")
-            sys.exit(1)
+            logger.warning(f"No enriched data found for {process_date}. Processing empty DataFrame to maintain schema.")
 
         window = Window.partitionBy("vehicle_id", "event_time_ms").orderBy(col("kafka_offset").desc())
 
@@ -84,9 +85,9 @@ def transform_stop_events(spark: SparkSession, config, process_date: str):
             .load(bronze_path) \
             .filter(col("date") == process_date)
         
+        # Handling for stop events.
         if bronze_df.count() == 0:
-            logger.error(f"FATAL: No stop_events data found for {process_date} at {bronze_path}")
-            sys.exit(1)
+            logger.warning(f"No stop_events data found for {process_date}. Processing empty DataFrame to maintain schema.")
 
         window = Window.partitionBy("vehicle_id", "stop_id", "arrival_time").orderBy(
             col("kafka_offset").desc()
@@ -96,7 +97,7 @@ def transform_stop_events(spark: SparkSession, config, process_date: str):
             bronze_df.withColumn("row_num", row_number().over(window))
             .filter(col("row_num") == 1)
             .drop("row_num")
-            # ALIGNMENT: Required for Gold aggregate_stop_performance joins
+            # Required for Gold aggregate_stop_performance joins
             .withColumn("arrival_timestamp", (col("arrival_time") / 1000).cast("timestamp"))
             .withColumn("delay_at_arrival", col("delay_at_arrival").cast("integer"))
             .withColumn("dwell_time_ms", col("dwell_time_ms").cast("long"))
