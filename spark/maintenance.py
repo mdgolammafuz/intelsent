@@ -1,8 +1,7 @@
 """
 Maintenance Job: VACUUM, Retention, Optimization
-Pattern: Cloud Lifecycle & FinOps (DE#2 & Cloud#5)
+Pattern: Cloud Lifecycle & FinOps (Survival Mode)
 Aligned: Uses UTC cutoff to match Delta Lake storage and event telemetry.
-Professional: Forces explicit date targeting to ensure retention windows are deterministic.
 """
 
 import argparse
@@ -12,8 +11,6 @@ from datetime import datetime, timedelta, timezone
 import psycopg2 
 
 from delta.tables import DeltaTable
-
-# Project-wide absolute import consistency
 from spark.config import create_spark_session, load_config
 
 logging.basicConfig(
@@ -25,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def apply_retention(spark, table_path, retention_days, table_name, base_date: str):
     """
-    Purge old partitions from Delta Lake (MinIO) to manage costs.
+    Purge old partitions from Delta Lake.
     """
     try:
         if not DeltaTable.isDeltaTable(spark, table_path):
@@ -42,10 +39,11 @@ def apply_retention(spark, table_path, retention_days, table_name, base_date: st
     except Exception as e:
         logger.error(f"Retention failed for {table_name}: {e}")
 
-def cleanup_postgres(config, retention_days=35):
+def cleanup_postgres(config, retention_days=3):
     """
     Clean up Postgres Bronze table to prevent disk overflow.
-    CRITICAL: Retention must be > 30 days to support Drift Monitoring baseline.
+    SURVIVAL MODE: Defaults to 3 days (was 35). 
+    We prioritize Disk Space over long-term Drift Monitoring history.
     """
     table_name = "bronze.enriched"
     try:
@@ -75,11 +73,14 @@ def cleanup_postgres(config, retention_days=35):
     except Exception as e:
         logger.error(f"Postgres cleanup failed: {e}")
 
-def vacuum_table(spark, table_path, table_name, retention_hours=168):
+def vacuum_table(spark, table_path, table_name, retention_hours=0):
+    """
+    SURVIVAL MODE: retention_hours=0 removes 'ghost' files immediately.
+    """
     try:
         if not DeltaTable.isDeltaTable(spark, table_path):
             return
-        logger.info(f"Vacuuming {table_name}...")
+        logger.info(f"Vacuuming {table_name} with retention {retention_hours} hours...")
         DeltaTable.forPath(spark, table_path).vacuum(retention_hours)
     except Exception as e:
         logger.error(f"Vacuum failed for {table_name}: {e}")
@@ -102,6 +103,8 @@ def main():
 
     config = load_config()
     spark = create_spark_session("TransitFlow-Maintenance")
+    
+    # Disable safety check to allow 0-hour Vacuum (Immediate Deletion)
     spark.conf.set("spark.databricks.delta.retentionDurationCheck.enabled", "false")
 
     tables = {
@@ -126,14 +129,15 @@ def main():
             if args.action in ["retention", "all"]:
                 apply_retention(spark, path, days, name, args.date)
             if args.action in ["vacuum", "all"]:
-                vacuum_table(spark, path, name)
+                # Force aggressive vacuum (0 hours) to free disk immediately
+                vacuum_table(spark, path, name, retention_hours=0)
             if args.action in ["optimize", "all"]:
                 optimize_table(spark, path, name)
 
-    # Run Postgres Cleanup if action is retention or all
+    # Run Postgres Cleanup
     if args.action in ["retention", "all"]:
-        # Hardcoded 35 days to ensure monitor_drift (30 days) always has data
-        cleanup_postgres(config, retention_days=35)
+        # 3 days retention for Survival Mode
+        cleanup_postgres(config, retention_days=3)
 
     spark.stop()
 
