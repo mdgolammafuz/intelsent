@@ -338,6 +338,40 @@ services:
     depends_on:
       - flink-jobmanager
     restart: always
+  # --- Flink Auto-Submitter (Survives CI/CD Restarts) ---
+  flink-job-submitter:
+    image: flink:1.18.1-java11
+    container_name: flink-job-submitter
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:29092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    command: >
+      /bin/sh -c "
+      echo 'Waiting for Flink JobManager...';
+      while ! flink list -m flink-jobmanager:8081 > /dev/null 2>&1; do sleep 3; done;
+      echo 'JobManager is online. Checking state...';
+      sleep 10;
+      if flink list -m flink-jobmanager:8081 | grep -q 'RUNNING'; then
+        echo 'Job is already running. Exiting cleanly.';
+      else
+        echo 'No running jobs found. Submitting JAR...';
+        flink run -m flink-jobmanager:8081 -d /opt/flink/jobs/transitflow-flink-1.0.0.jar;
+      fi
+      "
+    volumes:
+      - ./flink-jobs:/opt/flink/jobs:ro
+    depends_on:
+      flink-jobmanager:
+        condition: service_started
+    restart: on-failure
+    logging: *default-logging
 
   # --- Batch Processing & ML Training (Spark) ---
   spark-master:
