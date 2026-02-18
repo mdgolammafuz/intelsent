@@ -294,6 +294,9 @@ services:
         s3.secret-key: ${MINIO_ROOT_PASSWORD}
         state.checkpoints.dir: s3://flink-checkpoints/data/
         execution.checkpointing.interval: 60s
+        restart-strategy.type: fixed-delay
+        restart-strategy.fixed-delay.attempts: 100
+        restart-strategy.fixed-delay.delay: 10s
     volumes:
       - ./flink-jobs:/opt/flink/jobs
     depends_on:
@@ -329,6 +332,9 @@ services:
         s3.path.style.access: true
         s3.access-key: ${MINIO_ROOT_USER}
         s3.secret-key: ${MINIO_ROOT_PASSWORD}
+        restart-strategy.type: fixed-delay
+        restart-strategy.fixed-delay.attempts: 100
+        restart-strategy.fixed-delay.delay: 10s
     depends_on:
       - flink-jobmanager
     restart: always
