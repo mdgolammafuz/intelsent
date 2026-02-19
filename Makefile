@@ -197,21 +197,8 @@ spark-test:
 
 # --- Data Contracts & Warehouse (dbt) ---
 
-# Added backslashes for multi-line variable definition
-DBT_ENV = cd dbt && DBT_PROFILES_DIR=. \
-	POSTGRES_USER=$(POSTGRES_USER) \
-	POSTGRES_PASSWORD=$(POSTGRES_PASSWORD) \
-	POSTGRES_DB=$(POSTGRES_DB) \
-	POSTGRES_HOST=$(POSTGRES_HOST) \
-	POSTGRES_PORT=$(POSTGRES_PORT) \
-	POSTGRES_SCHEMA=$(POSTGRES_SCHEMA) \
-	REDIS_HOST=$(REDIS_HOST) \
-	REDIS_PORT=$(REDIS_PORT) \
-	REDIS_PASSWORD=$(REDIS_PASSWORD) \
-	SCHEMA_REGISTRY_URL=$(SCHEMA_REGISTRY_URL) \
-	FEATURE_API_URL=$(FEATURE_API_URL) \
-	SERVING_API_URL=$(SERVING_API_URL) \
-	OTLP_ENDPOINT=$(OTLP_ENDPOINT)
+# Route all dbt commands through the isolated Docker container
+DBT_EXEC = docker exec -$(INTERACTIVE) -w /usr/app/dbt dbt dbt
 
 test-contracts:
 	@echo "Running Contract Unit Tests..."
@@ -229,28 +216,28 @@ schema-list:
 	@curl -s $(REGISTRY_URL)/subjects | python3 -m json.tool
 
 dbt-deps:
-	$(DBT_ENV) dbt deps
+	$(DBT_EXEC) deps
 
 dbt-seed:
-	$(DBT_ENV) dbt seed
+	$(DBT_EXEC) seed
 
 dbt-snapshot:
-	$(DBT_ENV) dbt snapshot
+	$(DBT_EXEC) snapshot
 
 dbt-run:
-	$(DBT_ENV) dbt run --vars "{'target_date': '$(DATE)'}"
+	$(DBT_EXEC) run --vars "{'target_date': '$(DATE)'}"
 
 dbt-refresh:
-	$(DBT_ENV) dbt run --full-refresh --vars "{'target_date': '$(DATE)'}"
+	$(DBT_EXEC) run --full-refresh --vars "{'target_date': '$(DATE)'}"
 
 dbt-test:
-	$(DBT_ENV) dbt test --vars "{'target_date': '$(DATE)'}"
+	$(DBT_EXEC) test --vars "{'target_date': '$(DATE)'}"
 
 dbt-docs:
-	$(DBT_ENV) dbt docs generate
+	$(DBT_EXEC) docs generate
 	@echo "Serving documentation at http://localhost:8085"
-	$(DBT_ENV) dbt docs serve --port 8085
-
+	$(DBT_EXEC) docs serve --port 8085
+	
 # --- Orchestrated Verification ---
 
 verify-lakehouse:
