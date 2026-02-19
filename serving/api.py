@@ -287,8 +287,8 @@ def get_features_with_circuit_breaker(
                     if offline:
                         combined.offline = offline
                         combined.offline_available = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"CRITICAL: Offline feature fetch crashed: {e}")
 
     return combined
 
