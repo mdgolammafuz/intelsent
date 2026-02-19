@@ -95,6 +95,8 @@ help:
 # --- Infrastructure Management ---
 dev-up:
 	@if [ ! -f infra/local/.env ]; then cp infra/local/.env.example infra/local/.env; fi
+	@echo "Compiling Flink Streaming Job..."
+	@$(MAKE) flink-build
 	cd infra/local && docker compose up -d
 	@echo "Initializing services..."
 	@sleep 15
