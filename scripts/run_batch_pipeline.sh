@@ -14,6 +14,8 @@ echo "[$(date)] === Starting TransitFlow Daily Pipeline ==="
 # --- PERMANENT INFRASTRUCTURE SETUP ---
 # Ensure the marts schema exists before Spark or API tries to use it
 docker exec postgres psql -U transit -d transit -c "CREATE SCHEMA IF NOT EXISTS marts;"
+echo "[$(date)] 0. Ensuring Flink Stream is Active..."
+make flink-deploy
 
 # --- Phase 1: Ingestion & Storage ---
 echo "[$(date)] 1. Running Bronze Ingestion (Batch Mode)..."
