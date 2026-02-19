@@ -11,6 +11,10 @@ fi
 
 echo "[$(date)] === Starting TransitFlow Daily Pipeline ==="
 
+# --- PERMANENT INFRASTRUCTURE SETUP ---
+# Ensure the marts schema exists before Spark or API tries to use it
+docker exec postgres psql -U transit -d transit -c "CREATE SCHEMA IF NOT EXISTS marts;"
+
 # --- Phase 1: Ingestion & Storage ---
 echo "[$(date)] 1. Running Bronze Ingestion (Batch Mode)..."
 make spark-bronze
@@ -30,6 +34,12 @@ make metadata-init
 
 echo "[$(date)] 6. Running Gold Aggregation..."
 make spark-gold
+
+echo "[$(date)] 6.5. Capturing Slowly Changing Dimensions (Snapshots)..."
+make dbt-snapshot
+
+echo "[$(date)] 6.6. Running dbt to populate Marts..."
+make dbt-run
 
 # --- Phase 3: Maintenance ---
 echo "[$(date)] 7. Running Lakehouse Maintenance..."
