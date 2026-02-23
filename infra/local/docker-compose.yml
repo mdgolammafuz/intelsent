@@ -492,6 +492,11 @@ services:
       mc mb myminio/flink-checkpoints --ignore-existing;
       mc policy set public myminio/transitflow-lakehouse;
       mc policy set public myminio/flink-checkpoints;
+      
+      # --- HARD QUOTAS ---
+      mc admin bucket quota myminio/transitflow-lakehouse --hard 5G;
+      mc admin bucket quota myminio/flink-checkpoints --hard 1G;
+      
       exit 0;
       "
 
