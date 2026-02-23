@@ -11,13 +11,23 @@ fi
 
 echo "[$(date)] === Starting TransitFlow Daily Pipeline ==="
 
+# --- PRE-FLIGHT CLEANUP ---
+echo "[$(date)] Running Pre-flight Garbage Collection..."
+# Bulletproof permissions-bypassing deletion of yesterday's Spark shuffle data
+docker run --rm -v $(pwd)/spark-tmp:/tmp-data alpine sh -c "rm -rf /tmp-data/*" || true
+
+# Aggressively delete Lakehouse data older than 1 day to save disk space
+docker exec $INTERACTIVE minio sh -c 'mc alias set myminio http://localhost:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD > /dev/null' || true
+docker exec $INTERACTIVE minio mc rm -r --force --older-than 1d myminio/transitflow-lakehouse/bronze/ || true
+docker exec $INTERACTIVE minio mc rm -r --force --older-than 1d myminio/transitflow-lakehouse/silver/ || true
+
 # --- PERMANENT INFRASTRUCTURE SETUP ---
 # Ensure the marts schema exists before Spark or API tries to use it
-docker exec postgres psql -U transit -d transit -c "CREATE SCHEMA IF NOT EXISTS marts;"
+docker exec $INTERACTIVE postgres psql -U transit -d transit -c "CREATE SCHEMA IF NOT EXISTS marts;"
 echo "[$(date)] 0. Ensuring Flink Stream is Active..."
 make flink-deploy
 
-# --- Phase 1: Ingestion & Storage ---
+# --- INGESTION & STORAGE ---
 echo "[$(date)] 1. Running Bronze Ingestion (Batch Mode)..."
 make spark-bronze
 
@@ -30,7 +40,7 @@ make spark-silver
 echo "[$(date)] 4. Verifying Data Integrity (Reconciliation)..."
 make spark-reconcile
 
-# --- Phase 2: Analytics & Metadata ---
+# --- ANALYTICS & METADATA ---
 echo "[$(date)] 5. Initializing Gold Metadata..."
 make metadata-init
 
@@ -43,29 +53,20 @@ make dbt-snapshot
 echo "[$(date)] 6.6. Running dbt to populate Marts..."
 make dbt-run
 
-# --- Phase 3: Maintenance ---
+# --- MAINTENANCE ---
 echo "[$(date)] 7. Running Lakehouse Maintenance..."
 # Vacuums Delta files and Cleans Postgres history (>3 days)
 make spark-maintenance
 
 echo "[$(date)] 8. Pruning Dangling Docker Images (Health Check)..."
 # Cleans up 1-2GB of orphaned images/networks safely
-docker system prune -f
+docker system prune -f || true
 
-# --- Phase 4: MLOps ---
+# --- MLOps ---
 echo "[$(date)] 9. Checking for Data Drift..."
 docker exec $INTERACTIVE serving-api python scripts/monitor_drift.py
 
 echo "[$(date)] 10. Evaluating Retraining Rules..."
 docker exec $INTERACTIVE serving-api python mlops/retraining.py --drift-file drift.json
-
-# --- Phase 5: CLEANUP (Survival Mode) ---
-echo "[$(date)] 11. CLEANUP: Removing processed raw data..."
-# Authenticate securely inside the container
-docker exec $INTERACTIVE minio sh -c 'mc alias set myminio http://localhost:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD > /dev/null'
-
-# Aggressively delete Bronze and Silver data older than 1 day to save disk space.
-docker exec $INTERACTIVE minio mc rm -r --force --older-than 1d myminio/transitflow-lakehouse/bronze/ || true
-docker exec $INTERACTIVE minio mc rm -r --force --older-than 1d myminio/transitflow-lakehouse/silver/ || true
 
 echo "[$(date)] === Pipeline Complete ==="
