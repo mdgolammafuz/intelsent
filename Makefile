@@ -53,8 +53,8 @@ SPARK_SUBMIT := docker exec -$(INTERACTIVE) --env-file infra/local/.env \
 	--master spark://spark-master:7077 \
 	--conf spark.driver.host=spark-master \
 	--total-executor-cores 1 \
-	--executor-memory 2G \
-	--driver-memory 1G \
+	--executor-memory 512m \
+	--driver-memory 512m \
 	--packages $(SPARK_PKGS)
 
 # --- The S3A Bridge ---
