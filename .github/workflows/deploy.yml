@@ -62,9 +62,28 @@ jobs:
             git reset --hard origin/main
 
             # 2. Restart Services
+            # 2. Restart Services
             make dev-down
-            make dev-up
-
+    
+            # Pre-compile Flink to save memory spikes later
+            make flink-build
+    
+            cd infra/local
+            # Stage 1: Boot Core Databases first
+            docker compose up -d postgres redis minio redpanda
+            sleep 15
+    
+            # Stage 2: Boot MLflow and wait for it to be healthy
+            docker compose up -d mlflow
+            sleep 15
+    
+            # Stage 3: Boot the rest of the application
+            docker compose up -d
+    
+            cd ../..
+            # Ensure Kafka topics exist
+            make topics
+    
             echo "Waiting 20 seconds for containers to stabilize..."
             sleep 20
 
