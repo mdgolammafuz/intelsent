@@ -90,3 +90,4 @@ outputs/
 *.pkl
 *.joblib
 drift.json
+spark-tmp/
